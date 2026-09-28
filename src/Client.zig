@@ -103,6 +103,33 @@ pub const env_base_url = "TYPESAFE_BASE_URL";
 /// `TYPESAFE_DEFAULT_MODEL`, read by `initFromEnv`.
 pub const env_model = "TYPESAFE_DEFAULT_MODEL";
 
+/// The OpenJEV API base URL. OpenJEV (https://openjev.sh) is a free community
+/// gateway to the same Jev model that TypeSafe serves. It speaks the same
+/// request/response contract as `api.typesafe.ai`; only the host, model id and
+/// key differ. TypeSafe stays the default; OpenJEV is opt-in.
+pub const openjev_base_url = "https://api.openjev.sh";
+/// The model id OpenJEV serves Jev under. The OpenJEV gateway also accepts
+/// TypeSafe aliases such as `jev-latest`, but `openjev` is its canonical id.
+pub const openjev_model = "openjev";
+/// `OPENJEV_API_KEY`, read by `initFromEnv` when the OpenJEV provider is
+/// selected. Get one from https://openjev.sh/dashboard.
+pub const env_openjev_api_key = "OPENJEV_API_KEY";
+/// `JEV_PROVIDER`, read by `initFromEnv` to choose a provider without code
+/// changes. `openjev` selects OpenJEV; anything else (or unset) leaves
+/// TypeSafe as the default.
+pub const env_provider = "JEV_PROVIDER";
+
+/// Which Jev provider a client talks to. TypeSafe is the default and never
+/// changes; OpenJEV is a free community gateway to the same model. The two
+/// speak the same protocol, so the only effect is the base URL, model id and
+/// API key used.
+pub const Provider = enum {
+    /// TypeSafe's hosted API at `https://api.typesafe.ai` (the default).
+    typesafe,
+    /// The OpenJEV community gateway at `https://api.openjev.sh`.
+    openjev,
+};
+
 /// Headers the client sets itself. Extra headers cannot override them.
 pub const reserved_headers = [_][]const u8{
     "accept",
@@ -121,10 +148,18 @@ pub const reserved_headers = [_][]const u8{
 
 /// Options for `init` and `initFromEnv`.
 pub const Options = struct {
-    /// Sent as `Authorization: Bearer <key>`. Required by `init`;
-    /// `initFromEnv` falls back to `TYPESAFE_API_KEY`.
+    /// Sent as `Authorization: Bearer *** Required by `init`;
+    /// `initFromEnv` falls back to `TYPESAFE_API_KEY` (or `OPENJEV_API_KEY`
+    /// when the OpenJEV provider is selected).
     api_key: ?[]const u8 = null,
-    /// Defaults to `https://api.typesafe.ai`; `initFromEnv` falls back to
+    /// Which Jev provider to talk to. `null` leaves TypeSafe as the default
+    /// for `init`; `initFromEnv` resolves it from the `JEV_PROVIDER`
+    /// environment variable, then auto-selects OpenJEV when only
+    /// `OPENJEV_API_KEY` is set. TypeSafe is always the default whenever
+    /// `TYPESAFE_API_KEY` is set, so existing programs see no change.
+    provider: ?Provider = null,
+    /// Defaults to `https://api.typesafe.ai` (or `https://api.openjev.sh`
+    /// when the OpenJEV provider is selected); `initFromEnv` falls back to
     /// `TYPESAFE_BASE_URL` first.
     base_url: ?[]const u8 = null,
     /// The model for calls that do not name one. Defaults to `jev-latest`
@@ -181,15 +216,20 @@ pub const ListModelsOptions = struct {
 
 /// Builds a client from explicit options. Performs no I/O.
 ///
-/// `gpa` must be thread-safe. `options.api_key` is required.
+/// `gpa` must be thread-safe. `options.api_key` is required. When
+/// `options.provider` is `.openjev`, the base URL and model default to
+/// OpenJEV's; otherwise TypeSafe's defaults are used, exactly as before.
 pub fn init(gpa: Allocator, io: Io, options: Options) InitError!Client {
+    const provider = options.provider orelse .typesafe;
+    const base_default = if (provider == .openjev) openjev_base_url else default_base_url;
+    const model_default = if (provider == .openjev) openjev_model else default_model;
     return initResolved(
         gpa,
         io,
         options,
         options.api_key orelse return error.MissingApiKey,
-        options.base_url orelse default_base_url,
-        options.model orelse default_model,
+        options.base_url orelse base_default,
+        options.model orelse model_default,
     );
 }
 
@@ -199,17 +239,53 @@ pub fn init(gpa: Allocator, io: Io, options: Options) InitError!Client {
 /// environment values are ignored. A missing key is `error.MissingApiKey`
 /// here, never at request time. Performs no I/O.
 ///
+/// The provider is resolved as: the `provider` option, then the
+/// `JEV_PROVIDER` environment variable, then auto. Auto leaves TypeSafe as
+/// the default whenever `TYPESAFE_API_KEY` is set, and selects OpenJEV when
+/// only `OPENJEV_API_KEY` is set, so a program that already sets
+/// `TYPESAFE_API_KEY` sees no change. Selecting OpenJEV swaps in
+/// `OPENJEV_API_KEY`, `https://api.openjev.sh` and the `openjev` model id as
+/// the defaults; `TYPESAFE_BASE_URL` and `TYPESAFE_DEFAULT_MODEL` still
+/// override them when set.
+///
 /// In a `pub fn main(init: std.process.Init)` program, pass
 /// `init.environ_map`. The values are copied.
 pub fn initFromEnv(gpa: Allocator, io: Io, environ_map: *const std.process.Environ.Map, options: Options) InitError!Client {
-    return initResolved(
-        gpa,
-        io,
-        options,
-        options.api_key orelse envValue(environ_map, env_api_key) orelse return error.MissingApiKey,
-        options.base_url orelse envValue(environ_map, env_base_url) orelse default_base_url,
-        options.model orelse envValue(environ_map, env_model) orelse default_model,
-    );
+    const provider = options.provider orelse providerFromEnv(environ_map);
+    return switch (provider) {
+        .typesafe => initResolved(
+            gpa,
+            io,
+            options,
+            options.api_key orelse envValue(environ_map, env_api_key) orelse return error.MissingApiKey,
+            options.base_url orelse envValue(environ_map, env_base_url) orelse default_base_url,
+            options.model orelse envValue(environ_map, env_model) orelse default_model,
+        ),
+        .openjev => initResolved(
+            gpa,
+            io,
+            options,
+            options.api_key orelse envValue(environ_map, env_openjev_api_key) orelse return error.MissingApiKey,
+            options.base_url orelse envValue(environ_map, env_base_url) orelse openjev_base_url,
+            options.model orelse envValue(environ_map, env_model) orelse openjev_model,
+        ),
+    };
+}
+
+/// Resolves the provider from the environment when no option is given:
+/// `JEV_PROVIDER=openjev` selects OpenJEV; anything else is TypeSafe. With no
+/// `JEV_PROVIDER`, TypeSafe stays the default whenever `TYPESAFE_API_KEY` is
+/// set, and OpenJEV is selected only when `OPENJEV_API_KEY` is the sole key
+/// present. When neither key is set, TypeSafe is returned and `initFromEnv`
+/// reports `error.MissingApiKey`, exactly as before.
+fn providerFromEnv(environ_map: *const std.process.Environ.Map) Provider {
+    if (envValue(environ_map, env_provider)) |value| {
+        if (std.ascii.eqlIgnoreCase(value, "openjev")) return .openjev;
+        return .typesafe;
+    }
+    if (envValue(environ_map, env_api_key) != null) return .typesafe;
+    if (envValue(environ_map, env_openjev_api_key) != null) return .openjev;
+    return .typesafe;
 }
 
 fn envValue(environ_map: *const std.process.Environ.Map, name: []const u8) ?[]const u8 {

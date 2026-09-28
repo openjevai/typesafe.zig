@@ -7,6 +7,8 @@ request, and get back a struct of answers whose types come from your questions a
 This is an unofficial community client. It is not an official TypeSafe SDK, and it is not
 affiliated with or endorsed by TypeSafe.
 
+**OpenJEV support:** Jev is built by [TypeSafe](https://typesafe.ai). This fork keeps TypeSafe as the default and adds optional support for [OpenJEV](https://openjev.sh), a free community gateway to the same Jev model — set `OPENJEV_API_KEY` (or `JEV_PROVIDER=openjev`) to use it. Original project: https://github.com/mattneel/typesafe.zig by @mattneel.
+
 ```zig
 const std = @import("std");
 const typesafe = @import("typesafe");
@@ -227,9 +229,10 @@ var client: typesafe.Client = try .initFromEnv(init.gpa, init.io, init.environ_m
 
 | Option | Env var (`initFromEnv`) | Default | Description |
 | --- | --- | --- | --- |
-| `api_key` | `TYPESAFE_API_KEY` | required | Sent as `Authorization: Bearer <key>`. Missing: `error.MissingApiKey` at init, never at request time. |
-| `base_url` | `TYPESAFE_BASE_URL` | `https://api.typesafe.ai` | An `http` or `https` URL, optionally with a path prefix. No credentials, query or fragment. The host cannot be an IPv6 literal such as `[::1]`, which `std.http.Client` 0.16 cannot connect to, or longer than 255 bytes. |
-| `model` | `TYPESAFE_DEFAULT_MODEL` | `jev-latest` | `jev-preview` is also available; `client.listModels` lists them. |
+| `api_key` | `TYPESAFE_API_KEY` | required | Sent as `Authorization: Bearer <key>`. Missing: `error.MissingApiKey` at init, never at request time. With the OpenJEV provider, `OPENJEV_API_KEY` is read instead. |
+| `provider` | `JEV_PROVIDER` | `typesafe` | `typesafe` (the default) or `openjev`, the free community gateway at `https://openjev.sh`. When unset and only `OPENJEV_API_KEY` is set, OpenJEV is selected; TypeSafe stays the default whenever `TYPESAFE_API_KEY` is set. |
+| `base_url` | `TYPESAFE_BASE_URL` | `https://api.typesafe.ai` | An `http` or `https` URL, optionally with a path prefix. No credentials, query or fragment. The host cannot be an IPv6 literal such as `[::1]`, which `std.http.Client` 0.16 cannot connect to, or longer than 255 bytes. With the OpenJEV provider the default is `https://api.openjev.sh`. |
+| `model` | `TYPESAFE_DEFAULT_MODEL` | `jev-latest` | `jev-preview` is also available; `client.listModels` lists them. With the OpenJEV provider the default is `openjev`. |
 | `timeout` | | 10 s | Limit for each attempt: connect, TLS handshake, send and receive. `null` or `Io.Duration.max` disables it. At most `Client.max_timeout` (one year). |
 | `retry` | | `Retry{}` | See [Retries and timeouts](#retries-and-timeouts). |
 | `max_response_bytes` | | 16 MiB | A larger body fails with `error.ResponseTooLarge`. |
@@ -249,6 +252,32 @@ fails the call with `error.InvalidOption`, and the diagnostics `path` names the 
 ```zig
 var result = try client.ask(state, questions, .{ .model = "jev-preview", .retry = .disabled });
 ```
+
+### OpenJEV
+
+[OpenJEV](https://openjev.sh) is a free community gateway to the same Jev model that TypeSafe
+serves. It speaks the same request/response contract, so switching to it is only a base URL,
+model id and key change. TypeSafe stays the default; OpenJEV is opt-in and changes nothing for
+programs that already set `TYPESAFE_API_KEY`.
+
+```zig
+// Explicit: ask the OpenJEV gateway instead of TypeSafe.
+var client: typesafe.Client = try .init(gpa, io, .{
+    .provider = .openjev,
+    .api_key = openjev_key, // OPENJEV_API_KEY from https://openjev.sh/dashboard
+});
+
+// Or from the environment: export OPENJEV_API_KEY (and leave TYPESAFE_API_KEY unset),
+// or set JEV_PROVIDER=openjev to force OpenJEV even when both keys are present.
+var client: typesafe.Client = try .initFromEnv(init.gpa, init.io, init.environ_map, .{});
+```
+
+The provider is resolved as: the `provider` option, then `JEV_PROVIDER`, then auto. Auto leaves
+TypeSafe as the default whenever `TYPESAFE_API_KEY` is set, and selects OpenJEV only when
+`OPENJEV_API_KEY` is the sole key present. Selecting OpenJEV swaps in `https://api.openjev.sh`,
+the `openjev` model id and `OPENJEV_API_KEY` as the defaults; `TYPESAFE_BASE_URL` and
+`TYPESAFE_DEFAULT_MODEL` still override them when set. OpenJEV signals overload as HTTP 503
+(already retried as a 5xx, alongside TypeSafe's 529) and rate limits as 429.
 
 For tuning the client does not wrap, such as `connection_pool.free_size`, `client.http` is the
 underlying `std.http.Client`. Do not give it an HTTPS proxy: `std.http.Client` in Zig 0.16 does

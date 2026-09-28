@@ -405,13 +405,20 @@ Configuration (`Client.Options`), resolved as explicit option, then env var (onl
 | Option | Env var | Default |
 | --- | --- | --- |
 | `api_key` | `TYPESAFE_API_KEY` | none; `error.MissingApiKey` |
-| `base_url` | `TYPESAFE_BASE_URL` | `https://api.typesafe.ai` |
-| `model` | `TYPESAFE_DEFAULT_MODEL` | `jev-latest` |
+| `provider` | `JEV_PROVIDER` | `typesafe`; `openjev` selects the OpenJEV gateway, and auto-selects when only `OPENJEV_API_KEY` is set |
+| `base_url` | `TYPESAFE_BASE_URL` | `https://api.typesafe.ai` (or `https://api.openjev.sh` with the OpenJEV provider) |
+| `model` | `TYPESAFE_DEFAULT_MODEL` | `jev-latest` (or `openjev` with the OpenJEV provider) |
 | `timeout` | none | 10 s |
 | `retry` | none | `Retry{}` |
 | `max_response_bytes` | none | 16 MiB; exceeding it is `error.ResponseTooLarge` |
 | `extra_headers` | none | none; `authorization`, `accept`, `content-type`, `connection`, `host`, `user-agent`, `x-typesafe-*` and friends are reserved and rejected with `error.ReservedHeader` |
 | `hooks` | none | `.{}` |
+
+OpenJEV (https://openjev.sh) is a free community gateway to the same Jev model. It speaks the
+same `POST /v1/systemone` contract; selecting the `openjev` provider only swaps the base URL,
+model id and key (`OPENJEV_API_KEY`). TypeSafe stays the default and is unchanged whenever
+`TYPESAFE_API_KEY` is set. OpenJEV signals overload as HTTP 503 (retried as a 5xx, like TypeSafe's
+529) and rate limits as 429.
 
 The base URL must be an absolute `http` or `https` URL with a host, without credentials, query or
 fragment; an IPv6 literal host, which `std.http.Client` 0.16 cannot connect to, and a host longer
